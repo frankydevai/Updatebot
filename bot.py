@@ -440,21 +440,12 @@ def format_update(load: dict, location: dict, miles_left: int, status: str) -> s
     fuel_str = f"{fuel}%" if fuel is not None else "N/A"
     return (
         f"<b>Update of the load # {load['load_number']} ✅\n"
-        f"\n"
         f"Truck: {load['truck_number']} 🚛\n"
-        f"\n"
         f"The truck is rolling to: 📌 {load['destination_location']}\n"
-        f"\n"
         f"Current location: 📍 {location['address']}\n"
-        f"\n"
         f"Miles left: 🚩 {miles_left}\n"
-        f"\n"
         f"Delivery time: 🕐 {delivery}\n"
-        f"\n"
-        f"Status: {status}\n"
-        f"\n"
         f"Fuel level: ⛽️ {fuel_str}\n"
-        f"\n"
         f"We will keep you updated.</b>"
     )
 
