@@ -283,6 +283,7 @@ def get_active_loads() -> list:
             "destination_location": _stop_city_state(dest_stop) if dest_stop else "Unknown",
             "destination_lat": dest_coords[0] if dest_coords else None,
             "destination_lng": dest_coords[1] if dest_coords else None,
+            "delivery_time": dest_stop.get("appointment_date", "") if dest_stop else "",
         }
 
         loads.append(load)
@@ -295,7 +296,7 @@ def get_active_loads() -> list:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# SAMSARA — Truck GPS
+# SAMSARA — Truck GPS + Fuel
 # ═══════════════════════════════════════════════════════════════════════
 
 async def get_samsara_vehicles(client: httpx.AsyncClient) -> list:
@@ -311,7 +312,39 @@ async def get_samsara_vehicles(client: httpx.AsyncClient) -> list:
     return data
 
 
-def find_truck_in_vehicles(vehicles: list, truck_number: str) -> Optional[dict]:
+async def get_samsara_fuel_levels(client: httpx.AsyncClient) -> dict:
+    """Fetch fuel levels via /fleet/vehicles/stats/feed → returns {vehicle_id: fuel_pct}."""
+    headers = {"Authorization": f"Bearer {SAMSARA_API_TOKEN}"}
+    try:
+        resp = await client.get(
+            f"{SAMSARA_BASE_URL}/fleet/vehicles/stats/feed",
+            headers=headers,
+            params={"types": "fuelPercents"},
+        )
+        resp.raise_for_status()
+        data = resp.json().get("data", [])
+
+        fuel_map = {}
+        for v in data:
+            vid = v.get("id")
+            if not vid:
+                continue
+            fuel_events = v.get("fuelPercents", [])
+            if fuel_events:
+                latest = max(fuel_events, key=lambda x: x.get("time", ""))
+                val = latest.get("value")
+                if val is not None:
+                    fval = float(val)
+                    fuel_map[vid] = round(fval * 100, 1) if fval <= 1.0 else round(fval, 1)
+
+        logger.info(f"Samsara: fuel data for {len(fuel_map)} vehicles")
+        return fuel_map
+    except Exception as e:
+        logger.warning(f"Samsara fuel fetch failed: {e}")
+        return {}
+
+
+def find_truck_in_vehicles(vehicles: list, truck_number: str, fuel_map: dict = None) -> Optional[dict]:
     """Find a truck in the Samsara vehicle list. Uses v.location.latitude structure."""
     for v in vehicles:
         v_name = v.get("name", "").strip()
@@ -327,11 +360,16 @@ def find_truck_in_vehicles(vehicles: list, truck_number: str) -> Optional[dict]:
             address = loc.get("reverseGeo", {}).get("formattedLocation", "Unknown")
             speed = float(loc.get("speed", 0) or 0)
 
+            # Get fuel level from fuel_map by vehicle id
+            vid = v.get("id")
+            fuel_pct = fuel_map.get(vid) if fuel_map and vid else None
+
             return {
                 "lat": float(lat),
                 "lng": float(lng),
                 "address": address,
                 "speed_mph": round(speed, 1),
+                "fuel_pct": fuel_pct,
             }
 
     return None
@@ -377,15 +415,47 @@ def determine_status(speed_mph: float, miles_left: int, qm_status: str) -> str:
 # FORMAT MESSAGE
 # ═══════════════════════════════════════════════════════════════════════
 
+def _format_delivery_time(raw: str) -> str:
+    """Format QM appointment_date into readable string."""
+    if not raw:
+        return "TBD"
+    try:
+        from datetime import datetime
+        # Try common formats from QuickManage
+        for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S%z",
+                    "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+            try:
+                dt = datetime.strptime(raw.replace("+00:00", "Z").rstrip("Z"), fmt.rstrip("Z").rstrip("%z"))
+                return dt.strftime("%m/%d/%Y %I:%M %p")
+            except ValueError:
+                continue
+        return raw  # return as-is if no format matches
+    except Exception:
+        return raw
+
+
 def format_update(load: dict, location: dict, miles_left: int, status: str) -> str:
+    delivery = _format_delivery_time(load.get("delivery_time", ""))
+    fuel = location.get("fuel_pct")
+    fuel_str = f"{fuel}%" if fuel is not None else "N/A"
     return (
-        f"Update of the load # <b>{load['load_number']}</b> ✅\n"
-        f"Truck: <b>{load['truck_number']}</b> 🚛\n"
-        f"The truck is rolling to: 📌 <b>{load['destination_location']}</b>\n"
-        f"Current location: 📍 <b>{location['address']}</b>\n"
-        f"Miles left: 🚩 <b>{miles_left}</b>\n"
+        f"<b>Update of the load # {load['load_number']} ✅\n"
+        f"\n"
+        f"Truck: {load['truck_number']} 🚛\n"
+        f"\n"
+        f"The truck is rolling to: 📌 {load['destination_location']}\n"
+        f"\n"
+        f"Current location: 📍 {location['address']}\n"
+        f"\n"
+        f"Miles left: 🚩 {miles_left}\n"
+        f"\n"
+        f"Delivery time: 🕐 {delivery}\n"
+        f"\n"
         f"Status: {status}\n"
-        f"We will keep you updated."
+        f"\n"
+        f"Fuel level: ⛽️ {fuel_str}\n"
+        f"\n"
+        f"We will keep you updated.</b>"
     )
 
 
@@ -416,12 +486,15 @@ async def send_all_updates(bot: Bot):
             logger.error(f"Samsara error: {e}")
             return
 
+        # Fetch fuel levels ONCE
+        fuel_map = await get_samsara_fuel_levels(client)
+
         update_count = 0
         skipped = 0
         for load in loads:
             truck_num = load["truck_number"]
             try:
-                location = find_truck_in_vehicles(vehicles, truck_num)
+                location = find_truck_in_vehicles(vehicles, truck_num, fuel_map)
                 if not location:
                     skipped += 1
                     continue
@@ -511,7 +584,8 @@ async def cmd_load(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         async with httpx.AsyncClient(timeout=30) as client:
             vehicles = await get_samsara_vehicles(client)
-            location = find_truck_in_vehicles(vehicles, load["truck_number"])
+            fuel_map = await get_samsara_fuel_levels(client)
+            location = find_truck_in_vehicles(vehicles, load["truck_number"], fuel_map)
             if not location:
                 await update.message.reply_text(f"❌ No GPS for truck {load['truck_number']}")
                 return
