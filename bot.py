@@ -360,17 +360,17 @@ def estimate_road_miles(straight_miles: float) -> int:
 def determine_status(speed_mph: float, miles_left: int, qm_status: str) -> str:
     qm_lower = qm_status.lower()
     if "delivered" in qm_lower:
-        return "✅ Delivered"
+        return "Delivered ✅"
     elif "dispatched" in qm_lower:
-        return "📦 Dispatched — heading to pickup"
-    elif miles_left <= 30:
-        return "📍 Almost There"
+        return "Dispatched — heading to pickup 📦"
+    elif miles_left <= 50:
+        return "Almost There 📍"
     elif speed_mph < 3:
-        return "🅿️ Stopped"
+        return "Stopped 🅿️"
     elif speed_mph < 15:
-        return "🐢 Slow Traffic"
+        return "Slow Traffic 🐢"
     else:
-        return "🚛 Rolling"
+        return "Rolling 🚛"
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -379,14 +379,12 @@ def determine_status(speed_mph: float, miles_left: int, qm_status: str) -> str:
 
 def format_update(load: dict, location: dict, miles_left: int, status: str) -> str:
     return (
-        f"📋 Here is an update for load # <b>{load['load_number']}</b>\n"
-        f"🚛 Truck: <b>{load['truck_number']}</b>\n"
-        f"\n"
-        f"🏁 The truck is rolling to: <b>{load['destination_location']}</b>\n"
-        f"📍 Current location: <b>{location['address']}</b>\n"
-        f"📏 Miles left: <b>{miles_left}</b>\n"
-        f"📊 Status: <b>{status}</b>\n"
-        f"\n"
+        f"Update of the load # <b>{load['load_number']}</b> 📌\n"
+        f"Truck: <b>{load['truck_number']}</b> 🚛\n"
+        f"The truck is rolling to: <b>{load['destination_location']}</b> 🏁\n"
+        f"Current location: <b>{location['address']}</b> 📍\n"
+        f"Miles left: <b>{miles_left}</b> 🚩\n"
+        f"Status: <b>{status}</b>\n"
         f"We will keep you updated."
     )
 
