@@ -37,6 +37,26 @@ UPDATE_INTERVAL_SECONDS = int(os.getenv("UPDATE_INTERVAL_SECONDS", "3600"))
 
 _ACTIVE_STATUSES = {"dispatched", "in_transit"}
 
+# ─── Truck Watchlist (only these trucks get hourly updates) ───────────
+import json
+
+WATCHLIST_FILE = os.getenv("WATCHLIST_FILE", "watchlist.json")
+
+def _load_watchlist() -> set:
+    """Load watchlist from disk."""
+    try:
+        with open(WATCHLIST_FILE, "r") as f:
+            return set(json.load(f))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return set()
+
+def _save_watchlist(trucks: set):
+    """Save watchlist to disk."""
+    with open(WATCHLIST_FILE, "w") as f:
+        json.dump(sorted(trucks), f)
+
+watched_trucks: set = _load_watchlist()
+
 # ─── Logging ──────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
@@ -457,6 +477,10 @@ def format_update(load: dict, location: dict, miles_left: int, status: str) -> s
 async def send_all_updates(bot: Bot):
     logger.info("⏰ Starting update cycle...")
 
+    if not watched_trucks:
+        logger.info("Watchlist is empty — no updates to send. Use /add <truck#> to add trucks.")
+        return
+
     try:
         loads = get_active_loads()
         logger.info(f"Got {len(loads)} active loads with trucks")
@@ -466,6 +490,14 @@ async def send_all_updates(bot: Bot):
 
     if not loads:
         logger.info("No active loads to update")
+        return
+
+    # Filter to only watched trucks
+    loads = [l for l in loads if l["truck_number"] in watched_trucks]
+    logger.info(f"Filtered to {len(loads)} loads matching watchlist: {sorted(watched_trucks)}")
+
+    if not loads:
+        logger.info("No watched trucks have active loads")
         return
 
     async with httpx.AsyncClient(timeout=30) as client:
@@ -528,12 +560,78 @@ async def scheduled_update(context: ContextTypes.DEFAULT_TYPE):
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🚛 <b>Truck Updater Bot</b>\n\n"
-        "Hourly location updates for all active loads.\n\n"
-        "/update — Send all updates now\n"
-        "/load <trip#> — Update specific load\n"
+        "Hourly updates for watched trucks only.\n\n"
+        "<b>Watchlist:</b>\n"
+        "/add 8161 0470 — Add trucks\n"
+        "/remove 8161 — Remove truck\n"
+        "/list — Show watched trucks\n"
+        "/clear — Clear all trucks\n\n"
+        "<b>Updates:</b>\n"
+        "/update — Send updates now\n"
+        "/load <ref#> — Update specific load\n"
         "/status — Bot connection status",
         parse_mode="HTML"
     )
+
+
+async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Add trucks to watchlist. Usage: /add 8161 0470 3042"""
+    global watched_trucks
+    if not context.args:
+        await update.message.reply_text("Usage: /add <truck#> <truck#> ...")
+        return
+
+    added = []
+    for t in context.args:
+        t = t.strip()
+        if t and t not in watched_trucks:
+            watched_trucks.add(t)
+            added.append(t)
+
+    _save_watchlist(watched_trucks)
+
+    if added:
+        await update.message.reply_text(f"✅ Added: {', '.join(added)}\n📋 Watchlist: {', '.join(sorted(watched_trucks))}")
+    else:
+        await update.message.reply_text(f"Already in watchlist.\n📋 Watchlist: {', '.join(sorted(watched_trucks))}")
+
+
+async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Remove trucks from watchlist. Usage: /remove 8161 0470"""
+    global watched_trucks
+    if not context.args:
+        await update.message.reply_text("Usage: /remove <truck#> <truck#> ...")
+        return
+
+    removed = []
+    for t in context.args:
+        t = t.strip()
+        if t in watched_trucks:
+            watched_trucks.discard(t)
+            removed.append(t)
+
+    _save_watchlist(watched_trucks)
+
+    if removed:
+        await update.message.reply_text(f"❌ Removed: {', '.join(removed)}\n📋 Watchlist: {', '.join(sorted(watched_trucks)) or 'empty'}")
+    else:
+        await update.message.reply_text(f"Not in watchlist.\n📋 Watchlist: {', '.join(sorted(watched_trucks)) or 'empty'}")
+
+
+async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show current watchlist."""
+    if watched_trucks:
+        await update.message.reply_text(f"📋 <b>Watched trucks ({len(watched_trucks)}):</b>\n{', '.join(sorted(watched_trucks))}", parse_mode="HTML")
+    else:
+        await update.message.reply_text("📋 Watchlist is empty. Use /add <truck#> to add trucks.")
+
+
+async def cmd_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Clear all trucks from watchlist."""
+    global watched_trucks
+    watched_trucks = set()
+    _save_watchlist(watched_trucks)
+    await update.message.reply_text("🗑 Watchlist cleared. No trucks will receive updates.")
 
 
 async def cmd_update_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -618,6 +716,10 @@ def main():
     app.add_handler(CommandHandler("update", cmd_update_now))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("load", cmd_load))
+    app.add_handler(CommandHandler("add", cmd_add))
+    app.add_handler(CommandHandler("remove", cmd_remove))
+    app.add_handler(CommandHandler("list", cmd_list))
+    app.add_handler(CommandHandler("clear", cmd_clear))
 
     app.job_queue.run_repeating(
         scheduled_update,
