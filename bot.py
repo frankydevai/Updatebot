@@ -309,22 +309,25 @@ async def get_samsara_vehicles(client: httpx.AsyncClient) -> list:
     return resp.json().get("data", [])
 
 
-async def get_truck_location(client: httpx.AsyncClient, truck_number: str) -> Optional[dict]:
-    vehicles = await get_samsara_vehicles(client)
-
+def find_truck_in_vehicles(vehicles: list, truck_number: str) -> Optional[dict]:
+    """Find a truck in the already-fetched Samsara vehicle list."""
     for v in vehicles:
         v_name = v.get("name", "").strip()
         if v_name.lower() == truck_number.lower() or truck_number.lower() in v_name.lower():
             gps = v.get("gps", {})
             loc = gps.get("location", {})
+            lat = loc.get("latitude")
+            lng = loc.get("longitude")
+            if lat is None or lng is None:
+                logger.warning(f"Truck {truck_number} found but no GPS coords")
+                return None
             return {
-                "lat": loc.get("latitude"),
-                "lng": loc.get("longitude"),
+                "lat": lat,
+                "lng": lng,
                 "address": gps.get("reverseGeo", {}).get("formattedLocation", "Unknown"),
-                "speed_mph": round(gps.get("speedMilesPerHour", 0), 1),
+                "speed_mph": round(gps.get("speedMilesPerHour", 0) or 0, 1),
             }
 
-    logger.warning(f"Truck {truck_number} not found in Samsara")
     return None
 
 
@@ -333,6 +336,8 @@ async def get_truck_location(client: httpx.AsyncClient, truck_number: str) -> Op
 # ═══════════════════════════════════════════════════════════════════════
 
 def haversine_miles(lat1, lon1, lat2, lon2) -> float:
+    if any(v is None for v in (lat1, lon1, lat2, lon2)):
+        return 0.0
     R = 3958.8
     d_lat = math.radians(lat2 - lat1)
     d_lon = math.radians(lon2 - lon1)
@@ -402,12 +407,22 @@ async def send_all_updates(bot: Bot):
         return
 
     async with httpx.AsyncClient(timeout=30) as client:
+        # Fetch ALL Samsara vehicles ONCE
+        try:
+            vehicles = await get_samsara_vehicles(client)
+            logger.info(f"Samsara: fetched {len(vehicles)} vehicles")
+        except Exception as e:
+            logger.error(f"Samsara error: {e}")
+            return
+
         update_count = 0
+        skipped = 0
         for load in loads:
             truck_num = load["truck_number"]
             try:
-                location = await get_truck_location(client, truck_num)
+                location = find_truck_in_vehicles(vehicles, truck_num)
                 if not location:
+                    skipped += 1
                     continue
 
                 if load.get("destination_lat") and load.get("destination_lng"):
@@ -434,7 +449,7 @@ async def send_all_updates(bot: Bot):
             except Exception as e:
                 logger.error(f"Error load {load['load_number']}: {e}")
 
-        logger.info(f"Done. Sent {update_count}/{len(loads)} updates.")
+        logger.info(f"Done. Sent {update_count}/{len(loads)} updates. Skipped {skipped} (no GPS).")
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -494,7 +509,8 @@ async def cmd_load(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         async with httpx.AsyncClient(timeout=30) as client:
-            location = await get_truck_location(client, load["truck_number"])
+            vehicles = await get_samsara_vehicles(client)
+            location = find_truck_in_vehicles(vehicles, load["truck_number"])
             if not location:
                 await update.message.reply_text(f"❌ No GPS for truck {load['truck_number']}")
                 return
