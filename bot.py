@@ -275,7 +275,7 @@ def get_active_loads() -> list:
         pickup_stop = next((s for s in stops if s.get("pickup")), stops[0] if stops else None)
 
         load = {
-            "load_number": trip.get("trip_num") or trip.get("ref_number") or trip.get("id", "N/A"),
+            "load_number": trip.get("ref_number") or trip.get("trip_num") or trip.get("id", "N/A"),
             "ref_number": trip.get("ref_number", ""),
             "truck_number": truck_number,
             "status": trip.get("status", ""),
@@ -378,8 +378,6 @@ def determine_status(speed_mph: float, miles_left: int, qm_status: str) -> str:
 # ═══════════════════════════════════════════════════════════════════════
 
 def format_update(load: dict, location: dict, miles_left: int, status: str) -> str:
-    now = datetime.now(timezone.utc).strftime("%I:%M %p UTC")
-
     return (
         f"📋 Here is an update for load # <b>{load['load_number']}</b>\n"
         f"🚛 Truck: <b>{load['truck_number']}</b>\n"
@@ -389,8 +387,7 @@ def format_update(load: dict, location: dict, miles_left: int, status: str) -> s
         f"📏 Miles left: <b>{miles_left}</b>\n"
         f"📊 Status: <b>{status}</b>\n"
         f"\n"
-        f"We will keep you updated.\n"
-        f"<i>⏰ {now}</i>"
+        f"We will keep you updated."
     )
 
 
