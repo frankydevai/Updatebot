@@ -299,70 +299,37 @@ def get_active_loads() -> list:
 # ═══════════════════════════════════════════════════════════════════════
 
 async def get_samsara_vehicles(client: httpx.AsyncClient) -> list:
+    """Fetch vehicles using /fleet/vehicles/locations (same as FleetFuel)."""
     headers = {"Authorization": f"Bearer {SAMSARA_API_TOKEN}"}
     resp = await client.get(
-        f"{SAMSARA_BASE_URL}/fleet/vehicles/stats",
+        f"{SAMSARA_BASE_URL}/fleet/vehicles/locations",
         headers=headers,
-        params={"types": "gps"}
     )
     resp.raise_for_status()
     data = resp.json().get("data", [])
-
-    # Debug: log first vehicle structure to understand the data shape
-    if data:
-        import json
-        sample = data[0]
-        logger.info(f"Samsara sample vehicle keys: {list(sample.keys())}")
-        logger.info(f"Samsara sample vehicle: {json.dumps(sample, indent=2)[:1000]}")
-
+    logger.info(f"Samsara: {len(data)} vehicles fetched")
     return data
 
 
 def find_truck_in_vehicles(vehicles: list, truck_number: str) -> Optional[dict]:
-    """Find a truck in the already-fetched Samsara vehicle list."""
+    """Find a truck in the Samsara vehicle list. Uses v.location.latitude structure."""
     for v in vehicles:
         v_name = v.get("name", "").strip()
         if v_name.lower() == truck_number.lower() or truck_number.lower() in v_name.lower():
-            # Try multiple GPS data paths — Samsara response varies
-            gps_list = v.get("gps", [])
-
-            # gps might be a list of datapoints or a dict
-            if isinstance(gps_list, list) and gps_list:
-                gps = gps_list[0]  # take latest
-            elif isinstance(gps_list, dict):
-                gps = gps_list
-            else:
-                logger.warning(f"Truck {truck_number} ({v_name}): no gps data. Raw: {type(gps_list)}")
-                return None
-
-            # Location might be nested or flat
-            lat = (
-                gps.get("latitude") or
-                (gps.get("location", {}) or {}).get("latitude")
-            )
-            lng = (
-                gps.get("longitude") or
-                (gps.get("location", {}) or {}).get("longitude")
-            )
+            loc = v.get("location", {})
+            lat = loc.get("latitude")
+            lng = loc.get("longitude")
 
             if lat is None or lng is None:
-                logger.warning(f"Truck {truck_number} ({v_name}): GPS found but no lat/lng. Keys: {list(gps.keys())}")
+                logger.warning(f"Truck {truck_number} ({v_name}): no GPS coords")
                 return None
 
-            # Address
-            address = (
-                gps.get("reverseGeo", {}).get("formattedLocation") or
-                gps.get("formattedLocation") or
-                gps.get("address") or
-                "Unknown"
-            )
-
-            # Speed
-            speed = gps.get("speedMilesPerHour", 0) or 0
+            address = loc.get("reverseGeo", {}).get("formattedLocation", "Unknown")
+            speed = float(loc.get("speed", 0) or 0)
 
             return {
-                "lat": lat,
-                "lng": lng,
+                "lat": float(lat),
+                "lng": float(lng),
                 "address": address,
                 "speed_mph": round(speed, 1),
             }
