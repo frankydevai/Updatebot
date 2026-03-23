@@ -306,7 +306,16 @@ async def get_samsara_vehicles(client: httpx.AsyncClient) -> list:
         params={"types": "gps"}
     )
     resp.raise_for_status()
-    return resp.json().get("data", [])
+    data = resp.json().get("data", [])
+
+    # Debug: log first vehicle structure to understand the data shape
+    if data:
+        import json
+        sample = data[0]
+        logger.info(f"Samsara sample vehicle keys: {list(sample.keys())}")
+        logger.info(f"Samsara sample vehicle: {json.dumps(sample, indent=2)[:1000]}")
+
+    return data
 
 
 def find_truck_in_vehicles(vehicles: list, truck_number: str) -> Optional[dict]:
@@ -314,18 +323,48 @@ def find_truck_in_vehicles(vehicles: list, truck_number: str) -> Optional[dict]:
     for v in vehicles:
         v_name = v.get("name", "").strip()
         if v_name.lower() == truck_number.lower() or truck_number.lower() in v_name.lower():
-            gps = v.get("gps", {})
-            loc = gps.get("location", {})
-            lat = loc.get("latitude")
-            lng = loc.get("longitude")
-            if lat is None or lng is None:
-                logger.warning(f"Truck {truck_number} found but no GPS coords")
+            # Try multiple GPS data paths — Samsara response varies
+            gps_list = v.get("gps", [])
+
+            # gps might be a list of datapoints or a dict
+            if isinstance(gps_list, list) and gps_list:
+                gps = gps_list[0]  # take latest
+            elif isinstance(gps_list, dict):
+                gps = gps_list
+            else:
+                logger.warning(f"Truck {truck_number} ({v_name}): no gps data. Raw: {type(gps_list)}")
                 return None
+
+            # Location might be nested or flat
+            lat = (
+                gps.get("latitude") or
+                (gps.get("location", {}) or {}).get("latitude")
+            )
+            lng = (
+                gps.get("longitude") or
+                (gps.get("location", {}) or {}).get("longitude")
+            )
+
+            if lat is None or lng is None:
+                logger.warning(f"Truck {truck_number} ({v_name}): GPS found but no lat/lng. Keys: {list(gps.keys())}")
+                return None
+
+            # Address
+            address = (
+                gps.get("reverseGeo", {}).get("formattedLocation") or
+                gps.get("formattedLocation") or
+                gps.get("address") or
+                "Unknown"
+            )
+
+            # Speed
+            speed = gps.get("speedMilesPerHour", 0) or 0
+
             return {
                 "lat": lat,
                 "lng": lng,
-                "address": gps.get("reverseGeo", {}).get("formattedLocation", "Unknown"),
-                "speed_mph": round(gps.get("speedMilesPerHour", 0) or 0, 1),
+                "address": address,
+                "speed_mph": round(speed, 1),
             }
 
     return None
